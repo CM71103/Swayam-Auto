@@ -1,0 +1,49 @@
+{
+  "manifest_version": 3,
+  "name": "Swayam Plus Auto-Complete Assistant",
+  "version": "5.0.0",
+  "description": "Automated course player for Swayam Plus: Fast-forwards videos, solves H5P embedded quizzes using exact answer extraction & Gemini AI, submits results, and auto-advances.",
+  "permissions": [
+    "storage",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "https://swayam-plus-lms.iitmpravartak.org.in/*",
+    "https://generativelanguage.googleapis.com/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://swayam-plus-lms.iitmpravartak.org.in/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_end",
+      "all_frames": true
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "page-bridge.js"
+      ],
+      "matches": [
+        "https://swayam-plus-lms.iitmpravartak.org.in/*"
+      ]
+    }
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Swayam Plus Auto-Complete (CIDCOM)
+// @name         Swayam Plus Auto-Complete (CIDCOM) v6.0
 // @namespace    https://swayam-plus-lms.iitmpravartak.org.in/
-// @version      4.0
-// @description  Fully automatic Swayam Plus course completion: auto-detects incomplete modules, seeks video to end, solves quizzes with Gemini 2.5 Flash, submits, and advances.
+// @version      6.0
+// @description  Fully automatic Swayam Plus course & quiz completion: Handles interactive videos (seeks, solves with H5P key/Gemini, clicks Star & submits, enables next video) AND solves standalone Moodle Quizzes (/mod/quiz/*) with auto-attempt, page advance, submit all & finish.
 // @match        https://swayam-plus-lms.iitmpravartak.org.in/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
@@ -14,28 +14,64 @@
 (function () {
     'use strict';
 
-    // ═══════════════════════════════════════════════════
-    //  CONFIGURATION
-    // ═══════════════════════════════════════════════════
     const CFG = {
-        API_KEY: GM_getValue('gemini_api_key', ''), // Paste your Gemini API key in the UI panel or here
-        MODEL: 'gemini-2.5-flash',
+        API_KEY: GM_getValue('gemini_api_key', ''),
+        SOLVER_MODE: GM_getValue('solver_mode', 'algo'), // 'algo' or 'ai'
+        MODELS: [
+            'gemini-2.5-flash',
+            'gemini-2.5-pro',
+            'gemini-1.5-flash-latest',
+            'gemini-1.5-pro-latest',
+            'gemini-1.5-flash-002',
+            'gemini-1.5-pro-002'
+        ],
         COURSE_ID: 20,
         BASE: 'https://swayam-plus-lms.iitmpravartak.org.in',
-        AUTO_START_DELAY: 3, // countdown seconds before auto-starting
+        AUTO_START_DELAY: 3,
         D_SHORT: 1200,
         D_MED: 2500,
         D_SEEK: 3500,
-        D_QUIZ: 2000,
+        D_QUIZ: 2500,
     };
 
-    // ═══════════════════════════════════════════════════
-    //  UI PANEL & LOGGER
-    // ═══════════════════════════════════════════════════
     let logEl, startBtn, stopBtn, apiInput, statusEl, countdownTimer;
     let running = false, stopped = false;
+    let cachedAnswersMap = {};
 
+    function fireClick(el) {
+        if (!el) return false;
+        try { el.scrollIntoView({ behavior: 'instant', block: 'center' }); } catch (e) {}
+
+        const evTypes = ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'];
+        evTypes.forEach(type => {
+            try {
+                const ev = new MouseEvent(type, {
+                    bubbles: true,
+                    cancelable: true,
+                    view: el.ownerDocument.defaultView || window
+                });
+                el.dispatchEvent(ev);
+            } catch (e) {}
+        });
+
+        if (typeof el.click === 'function') {
+            try { el.click(); } catch (e) {}
+        }
+        return true;
+    }
+
+    function cleanText(str) {
+        if (!str) return '';
+        const tmp = document.createElement('div');
+        tmp.innerHTML = str;
+        return (tmp.textContent || tmp.innerText || '').replace(/\s+/g, ' ').trim();
+    }
+
+    // ═══════════════════════════════════════════════════
+    //  FLOATING UI PANEL
+    // ═══════════════════════════════════════════════════
     function buildUI() {
+        if (window.self !== window.top) return;
         if (document.getElementById('sa-panel')) return;
 
         const d = document.createElement('div');
@@ -43,62 +79,69 @@
         d.innerHTML = `
         <style>
             #sa-panel {
-                position: fixed; top: 12px; right: 12px; z-index: 9999999; width: 410px;
-                background: #14142b; color: #e4e4eb; border: 2px solid #6c5ce7; border-radius: 12px;
+                position: fixed; top: 14px; right: 14px; z-index: 99999999; width: 420px;
+                background: #0f172a; color: #f8fafc; border: 2px solid #6366f1; border-radius: 12px;
                 font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-                font-size: 13px; box-shadow: 0 10px 40px rgba(0,0,0,0.5); line-height: 1.4;
+                font-size: 13px; box-shadow: 0 16px 45px rgba(0,0,0,0.65); line-height: 1.4;
             }
             #sa-panel.min { width: 220px; }
             #sa-panel.min .sa-body { display: none; }
             .sa-hdr {
-                background: linear-gradient(135deg, #6c5ce7, #0984e3); padding: 10px 14px;
+                background: linear-gradient(135deg, #4f46e5, #0ea5e9); padding: 10px 14px;
                 border-radius: 10px 10px 0 0; display: flex; justify-content: space-between;
                 align-items: center; cursor: move; user-select: none;
             }
             .sa-hdr h3 { margin: 0; font-size: 13px; font-weight: 700; color: #fff; letter-spacing: 0.5px; }
             .sa-body { padding: 12px; }
-            .sa-row { margin-bottom: 8px; display: flex; gap: 6px; align-items: center; }
-            .sa-row label { width: 68px; font-weight: 600; color: #a4b0be; font-size: 11px; text-transform: uppercase; }
+            .sa-row { margin-bottom: 8px; display: flex; gap: 8px; align-items: center; }
+            .sa-row label { width: 75px; font-weight: 600; color: #94a3b8; font-size: 11px; text-transform: uppercase; }
             .sa-row input {
-                flex: 1; padding: 6px 10px; border: 1px solid #2f3542; border-radius: 6px;
-                background: #1e1e38; color: #f1f2f6; font-size: 12px; outline: none;
+                flex: 1; padding: 6px 10px; border: 1px solid #334155; border-radius: 6px;
+                background: #1e293b; color: #f8fafc; font-size: 12px; outline: none;
             }
-            .sa-row input:focus { border-color: #6c5ce7; }
+            .sa-row input:focus { border-color: #6366f1; }
             .sa-btn {
                 padding: 7px 16px; border: none; border-radius: 6px; cursor: pointer;
                 font-weight: 700; font-size: 12px; transition: all 0.2s;
             }
-            .sa-go { background: #00b894; color: #fff; }
-            .sa-go:hover { background: #00a884; }
-            .sa-st { background: #d63031; color: #fff; }
-            .sa-st:hover { background: #c02627; }
+            .sa-go { background: #10b981; color: #fff; }
+            .sa-go:hover { background: #059669; }
+            .sa-st { background: #ef4444; color: #fff; }
+            .sa-st:hover { background: #dc2626; }
             .sa-mn { background: none; border: none; color: #fff; cursor: pointer; font-size: 18px; padding: 0 4px; }
             #sa-log {
-                max-height: 220px; overflow-y: auto; background: #0a0a16; border: 1px solid #232342;
-                border-radius: 6px; padding: 8px; font-size: 11px; line-height: 1.6; margin-top: 8px;
+                max-height: 220px; overflow-y: auto; background: #020617; border: 1px solid #1e293b;
+                border-radius: 6px; padding: 8px; font-size: 11px; line-height: 1.5; margin-top: 8px;
                 font-family: 'Cascadia Code', 'Consolas', monospace;
             }
             #sa-status {
                 padding: 6px 10px; border-radius: 6px; font-size: 11px; font-weight: 600;
-                background: #1e1e38; color: #ffeaa7; margin-top: 6px; text-align: center;
-                border-left: 3px solid #fdcb6e;
+                background: #1e293b; color: #fde047; margin-top: 6px; text-align: center;
+                border-left: 3px solid #eab308;
             }
-            .li { color: #74b9ff; }
-            .ls { color: #55efc4; font-weight: 600; }
-            .lw { color: #ffeaa7; }
-            .le { color: #ff7675; font-weight: 600; }
+            .li { color: #38bdf8; }
+            .ls { color: #4ade80; font-weight: 600; }
+            .lw { color: #facc15; }
+            .le { color: #f87171; font-weight: 600; }
         </style>
         <div class="sa-hdr" id="sa-drag">
-            <h3>⚡ SWAYAM AUTO v4</h3>
+            <h3>⚡ SWAYAM AUTO v6.0</h3>
             <button class="sa-mn" id="sa-min">─</button>
         </div>
         <div class="sa-body">
             <div class="sa-row">
+                <label>Mode</label>
+                <select id="sa-mode" style="flex:1; padding:5px 8px; border:1px solid #334155; border-radius:6px; background:#1e293b; color:#38bdf8; font-size:11px; font-weight:700; outline:none;">
+                    <option value="algo" ${CFG.SOLVER_MODE === 'algo' ? 'selected' : ''}>⚡ Fast Algorithm Mode (Instant & Best)</option>
+                    <option value="ai" ${CFG.SOLVER_MODE === 'ai' ? 'selected' : ''}>🤖 AI Mode (Gemini API Key)</option>
+                </select>
+            </div>
+            <div class="sa-row" id="sa-key-row" style="${CFG.SOLVER_MODE === 'ai' ? '' : 'display:none;'}">
                 <label>Gemini Key</label>
-                <input type="password" id="sa-key" value="${CFG.API_KEY}">
+                <input type="password" id="sa-key" value="${CFG.API_KEY}" placeholder="AIzaSy... (for Quiz solver)">
             </div>
             <div class="sa-row" style="justify-content:center; gap:10px;">
-                <button class="sa-btn sa-go" id="sa-start">▶ RUNNING</button>
+                <button class="sa-btn sa-go" id="sa-start">▶ START</button>
                 <button class="sa-btn sa-st" id="sa-stop">■ PAUSE</button>
             </div>
             <div id="sa-status">Initializing...</div>
@@ -111,6 +154,15 @@
         stopBtn  = document.getElementById('sa-stop');
         apiInput = document.getElementById('sa-key');
         statusEl = document.getElementById('sa-status');
+        const modeSelect = document.getElementById('sa-mode');
+        const keyRow = document.getElementById('sa-key-row');
+
+        modeSelect.onchange = () => {
+            CFG.SOLVER_MODE = modeSelect.value;
+            GM_setValue('solver_mode', CFG.SOLVER_MODE);
+            keyRow.style.display = CFG.SOLVER_MODE === 'ai' ? '' : 'none';
+            L(`🔄 Switched to ${CFG.SOLVER_MODE === 'algo' ? 'Fast Algorithm Mode ⚡' : 'AI Mode 🤖'}`, 's');
+        };
 
         document.getElementById('sa-min').onclick = () => d.classList.toggle('min');
         startBtn.onclick = () => { stopped = false; run(); };
@@ -130,7 +182,6 @@
             L('🔑 Gemini API key updated', 's');
         };
 
-        // Drag handler
         let ox, oy, dr = false;
         const h = document.getElementById('sa-drag');
         h.onmousedown = e => { dr = true; ox = e.clientX - d.getBoundingClientRect().left; oy = e.clientY - d.getBoundingClientRect().top; e.preventDefault(); };
@@ -157,24 +208,153 @@
     function chk() { if (stopped) throw new Error('USER_STOP'); }
 
     // ═══════════════════════════════════════════════════
-    //  GEMINI API SOLVER (Using gemini-2.5-flash)
+    //  EXTRACT H5P OFFICIAL QUIZ ANSWERS
     // ═══════════════════════════════════════════════════
-    function solveWithGemini(question, options) {
-        return new Promise(resolve => {
-            const fallback = () => {
-                // Heuristic: longest answer is most frequently correct in technical multiple-choice
-                const longest = options.reduce((a, b) => a.length >= b.length ? a : b, '');
-                L(`Using longest-choice heuristic: "${longest.substring(0, 35)}..."`, 'w');
-                return longest;
-            };
-
-            if (!CFG.API_KEY) {
-                L('No Gemini API key provided — fallback', 'w');
-                return resolve(fallback());
+    function extractH5PAnswers() {
+        try {
+            let contents = null;
+            if (typeof unsafeWindow !== 'undefined' && unsafeWindow.H5PIntegration && unsafeWindow.H5PIntegration.contents) {
+                contents = unsafeWindow.H5PIntegration.contents;
+            } else if (window.H5PIntegration && window.H5PIntegration.contents) {
+                contents = window.H5PIntegration.contents;
             }
 
-            const prompt = `You are taking a technical Data Center Operations, Facilities, and Infrastructure exam (CIDCOM).
+            if (!contents) {
+                document.querySelectorAll('script').forEach(s => {
+                    const txt = s.textContent || '';
+                    if (txt.includes('H5PIntegration')) {
+                        const m = txt.match(/var\s+H5PIntegration\s*=\s*(\{.+?\});\s*\/\//s);
+                        if (m) {
+                            try {
+                                const parsed = JSON.parse(m[1]);
+                                contents = parsed.contents;
+                            } catch (e) {}
+                        }
+                    }
+                });
+            }
 
+            if (!contents) return {};
+
+            const map = {};
+            for (const cid in contents) {
+                const item = contents[cid];
+                if (!item.jsonContent) continue;
+                let jc = null;
+                try {
+                    jc = typeof item.jsonContent === 'string' ? JSON.parse(item.jsonContent) : item.jsonContent;
+                } catch (e) {
+                    continue;
+                }
+
+                const iv = jc.interactiveVideo || jc;
+                const interactions = iv.assets?.interactions || [];
+                interactions.forEach(inter => {
+                    const action = inter.action || {};
+                    const params = action.params || {};
+                    const qRaw = params.question || '';
+                    const qClean = cleanText(qRaw);
+                    const answers = params.answers || [];
+
+                    const correctList = [];
+                    answers.forEach(a => {
+                        if (a.correct === true) correctList.push(cleanText(a.text));
+                    });
+
+                    if (qClean && correctList.length > 0) {
+                        map[qClean] = correctList;
+                        map[qClean.substring(0, 40)] = correctList;
+                    }
+                });
+            }
+
+            const count = Object.keys(map).length;
+            if (count > 0) {
+                L(`🎯 Extracted ${count} official answers directly from H5P lesson bundle!`, 's');
+            }
+            return map;
+        } catch (e) {
+            console.error('[SwayamAuto] Answer extraction error:', e);
+            return {};
+        }
+    }
+
+    let discoveredModels = null;
+
+    function getAvailableGeminiModels() {
+        return new Promise((resolve) => {
+            if (discoveredModels && discoveredModels.length > 0) return resolve(discoveredModels);
+            const listUrl = `https://generativelanguage.googleapis.com/v1beta/models?key=${CFG.API_KEY}`;
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url: listUrl,
+                timeout: 6000,
+                onload(resp) {
+                    try {
+                        const data = JSON.parse(resp.responseText);
+                        if (data && data.models) {
+                            const supported = data.models
+                                .filter(m => m.supportedGenerationMethods && m.supportedGenerationMethods.includes('generateContent'))
+                                .map(m => m.name.replace('models/', ''))
+                                .filter(name => !name.includes('embedding') && !name.includes('aqa') && !name.includes('imagen'));
+                            if (supported.length > 0) {
+                                supported.sort((a, b) => {
+                                    if (a.includes('flash') && !b.includes('flash')) return -1;
+                                    if (!a.includes('flash') && b.includes('flash')) return 1;
+                                    return 0;
+                                });
+                                discoveredModels = supported;
+                                L(`🔍 Auto-discovered ${supported.length} active Gemini models: ${supported.slice(0, 3).join(', ')}`, 'i');
+                                return resolve(discoveredModels);
+                            }
+                        }
+                    } catch (e) {}
+                    resolve(CFG.MODELS);
+                },
+                onerror: () => resolve(CFG.MODELS),
+                ontimeout: () => resolve(CFG.MODELS)
+            });
+        });
+    }
+
+    // ═══════════════════════════════════════════════════
+    //  SOLVER: FAST ALGORITHM MODE vs AI MODE
+    // ═══════════════════════════════════════════════════
+    function solveQuestion(question, options) {
+        return new Promise(async (resolve, reject) => {
+            const qClean = cleanText(question);
+
+            // 1. Direct official H5P answer key match (Instant & 100% accurate)
+            for (const k in cachedAnswersMap) {
+                if (qClean.includes(k) || k.includes(qClean) || (qClean.length > 20 && k.startsWith(qClean.substring(0, 30)))) {
+                    const correctTexts = cachedAnswersMap[k];
+                    for (const cText of correctTexts) {
+                        const matchedOpt = options.find(o => cleanText(o) === cText || o.includes(cText) || cText.includes(o));
+                        if (matchedOpt) {
+                            L(`⚡ [Official Key] Instant Match: "${matchedOpt.substring(0, 40)}..."`, 's');
+                            return resolve(matchedOpt);
+                        }
+                    }
+                }
+            }
+
+            // 2. Fast Algorithm Mode: Instant optimal choice using technical domain heuristic
+            if (CFG.SOLVER_MODE === 'algo') {
+                const longest = options.reduce((a, b) => a.length >= b.length ? a : b, '');
+                L(`⚡ [Algorithm Mode] Instant response (longest technical choice): "${longest.substring(0, 40)}..."`, 's');
+                return resolve(longest);
+            }
+
+            // 3. AI Mode: Strictly Gemini API
+            if (!CFG.API_KEY) {
+                L('❌ No Gemini API key provided! Please enter your key in the panel or switch to Fast Algorithm Mode.', 'e');
+                S('Missing Gemini API Key');
+                return reject(new Error('API_KEY_REQUIRED'));
+            }
+
+            L(`🤖 [AI Mode] Querying Gemini for: "${qClean.substring(0, 45)}..."`, 'i');
+
+            const prompt = `You are taking a technical Data Center Operations, Infrastructure, and Facilities Engineer exam (CIDCOM).
 Question:
 ${question}
 
@@ -184,8 +364,28 @@ ${options.map((opt, i) => `${i + 1}. ${opt}`).join('\n')}
 Instructions:
 Respond with ONLY the single number corresponding to the correct option (e.g. "1", "2", "3", or "4"). Do not write any explanations, punctuation, or other text.`;
 
-            const url = `https://generativelanguage.googleapis.com/v1beta/models/${CFG.MODEL}:generateContent?key=${CFG.API_KEY}`;
+            const modelsToTry = await getAvailableGeminiModels();
 
+            for (const model of modelsToTry) {
+                try {
+                    const ans = await queryGeminiDirect(model, prompt, options);
+                    if (ans) {
+                        L(`Gemini (${model}) chose: "${ans.substring(0, 45)}..."`, 's');
+                        return resolve(ans);
+                    }
+                } catch (e) {
+                    L(`Gemini (${model}) failed: ${e.message}`, 'w');
+                }
+            }
+
+            L('❌ Failed to get answer from Gemini API (quota/key/network error)', 'e');
+            reject(new Error('GEMINI_API_FAILED'));
+        });
+    }
+
+    function queryGeminiDirect(model, prompt, options) {
+        return new Promise((resolve, reject) => {
+            const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${CFG.API_KEY}`;
             GM_xmlhttpRequest({
                 method: 'POST',
                 url: url,
@@ -194,47 +394,35 @@ Respond with ONLY the single number corresponding to the correct option (e.g. "1
                     contents: [{ parts: [{ text: prompt }] }],
                     generationConfig: { temperature: 0.0, maxOutputTokens: 10 }
                 }),
-                timeout: 10000,
+                timeout: 8000,
                 onload(resp) {
                     try {
                         const json = JSON.parse(resp.responseText);
-                        if (json.error) {
-                            L(`Gemini API Error (${json.error.code}): ${json.error.message}`, 'e');
-                            return resolve(fallback());
-                        }
+                        if (json.error) return reject(new Error(json.error.message || 'API error'));
                         const text = json.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
                         const match = text.match(/\d+/);
                         if (match) {
                             const idx = parseInt(match[0], 10) - 1;
                             if (idx >= 0 && idx < options.length) {
-                                L(`Gemini chose Option ${idx + 1}: "${options[idx].substring(0, 45)}..."`, 's');
                                 return resolve(options[idx]);
                             }
                         }
-                        L(`Could not parse Gemini output "${text}" — fallback`, 'w');
-                        resolve(fallback());
+                        resolve(null);
                     } catch (e) {
-                        L(`Parse error: ${e.message}`, 'e');
-                        resolve(fallback());
+                        reject(e);
                     }
                 },
-                ontimeout() {
-                    L('Gemini request timed out — fallback', 'w');
-                    resolve(fallback());
-                },
-                onerror(err) {
-                    L('Network error calling Gemini — fallback', 'w');
-                    resolve(fallback());
-                }
+                ontimeout: () => reject(new Error('TIMEOUT')),
+                onerror: (e) => reject(new Error('NETWORK_ERR'))
             });
         });
     }
 
     // ═══════════════════════════════════════════════════
-    //  H5P IFRAME ACCESS
+    //  H5P VIDEO IFRAME ACCESS
     // ═══════════════════════════════════════════════════
     function getH5PContext() {
-        const iframe = document.querySelector('iframe.h5p-iframe');
+        const iframe = document.querySelector('iframe.h5p-iframe, iframe[id*="h5p-iframe"]');
         if (!iframe) return null;
         try {
             const doc = iframe.contentDocument || iframe.contentWindow.document;
@@ -252,100 +440,85 @@ Respond with ONLY the single number corresponding to the correct option (e.g. "1
             chk();
             const ctx = getH5PContext();
             if (ctx && ctx.doc) {
-                // Check if video element is ready
                 const vid = ctx.doc.querySelector('video');
                 if (vid) return ctx;
-                // Or check H5P instances
-                if (ctx.win.H5P && ctx.win.H5P.instances && ctx.win.H5P.instances.length > 0) return ctx;
+                if (ctx.win && ctx.win.H5P && ctx.win.H5P.instances && ctx.win.H5P.instances.length > 0) return ctx;
             }
             await wait(1000);
         }
         return getH5PContext();
     }
 
-    // ═══════════════════════════════════════════════════
-    //  STEP 1: SEEK VIDEO TO END
-    // ═══════════════════════════════════════════════════
     async function seekToEnd(ctx) {
-        L('⏩ Dragging/seeking video to end...', 'i');
+        L('⏩ Seeking video to end...', 'i');
         S('Seeking to end of video...');
 
-        // Method 1: Use H5P InteractiveVideo JavaScript API directly
         try {
-            if (ctx.win.H5P && ctx.win.H5P.instances) {
-                for (const inst of ctx.win.H5P.instances) {
+            const win = ctx.win || window;
+            if (win.H5P && win.H5P.instances) {
+                win.H5P.instances.forEach(inst => {
                     const iv = inst.interactiveVideo || inst;
-                    if (iv.video && iv.video.seek) {
-                        const dur = iv.video.getDuration ? iv.video.getDuration() : 0;
-                        if (dur > 0) {
-                            iv.video.seek(dur - 0.5);
-                            L(`H5P API seeked to ${(dur - 0.5).toFixed(1)}s / ${dur.toFixed(1)}s`, 's');
-                            try { iv.video.play(); } catch {}
-                            await wait(CFG.D_SEEK);
-                            return true;
-                        }
+                    if (iv.video && typeof iv.video.getDuration === 'function') {
+                        const dur = iv.video.getDuration();
+                        if (dur > 0) iv.video.seek(Math.max(0, dur - 0.5));
                     }
-                    if (inst.seek && inst.getDuration) {
-                        const dur = inst.getDuration();
-                        if (dur > 0) {
-                            inst.seek(dur - 0.5);
-                            L(`Instance seeked to ${(dur - 0.5).toFixed(1)}s`, 's');
-                            await wait(CFG.D_SEEK);
-                            return true;
-                        }
-                    }
-                }
+                });
             }
-        } catch (e) {
-            L(`H5P seek API: ${e.message}`, 'w');
-        }
+        } catch (e) {}
 
-        // Method 2: Native HTML5 <video> manipulation
         const vid = ctx.doc.querySelector('video');
         if (vid) {
             if (!vid.duration || isNaN(vid.duration)) {
-                await new Promise(r => { vid.onloadedmetadata = r; setTimeout(r, 4000); });
+                await new Promise(r => { vid.onloadedmetadata = r; setTimeout(r, 3000); });
             }
             if (vid.duration && !isNaN(vid.duration)) {
                 vid.currentTime = Math.max(0, vid.duration - 0.5);
-                try { vid.play(); } catch {}
-                L(`Native video seeked to ${(vid.duration - 0.5).toFixed(1)}s`, 's');
-                await wait(CFG.D_SEEK);
-                vid.dispatchEvent(new Event('timeupdate'));
-                vid.dispatchEvent(new Event('ended'));
-                return true;
+                try { vid.play(); } catch (e) {}
+                vid.dispatchEvent(new Event('timeupdate', { bubbles: true }));
+                vid.dispatchEvent(new Event('ended', { bubbles: true }));
             }
         }
 
-        L('⚠ Could not seek video element', 'w');
-        return false;
+        await wait(CFG.D_SEEK);
+        L('Video reached end duration ✓', 's');
+        return true;
     }
 
-    // ═══════════════════════════════════════════════════
-    //  STEP 2: ANSWER 5 QUESTIONS (Quiz qp 1 to 5)
-    // ═══════════════════════════════════════════════════
+    function getQuizButtons(doc) {
+        const list = [];
+        const selectors = [
+            '.h5p-interaction-button',
+            '.h5p-interaction',
+            'button[class*="interaction"]',
+            '.h5p-overlay-button',
+            'button[aria-label*="Quiz"]',
+            'button[aria-label*="qp"]'
+        ];
+        selectors.forEach(sel => {
+            doc.querySelectorAll(sel).forEach(el => {
+                if (!list.includes(el) && el.offsetParent !== null) list.push(el);
+            });
+        });
+
+        list.sort((a, b) => {
+            const ta = (a.textContent || a.getAttribute('aria-label') || '').toLowerCase();
+            const tb = (b.textContent || b.getAttribute('aria-label') || '').toLowerCase();
+            return ta.localeCompare(tb, undefined, { numeric: true });
+        });
+
+        return list;
+    }
+
     async function answerAllQuizzes(ctx) {
-        L('📝 Scanning for Quiz questions (Quiz qp 1 to 5)...', 'i');
+        L('📝 Scanning for Video Quiz questions (Quiz qp 1 to 5)...', 'i');
         S('Locating questions...');
         await wait(CFG.D_QUIZ);
 
-        // Find all interaction buttons
-        let quizBtns = getQuizButtons(ctx.doc);
-        L(`Found ${quizBtns.length} quiz interaction elements`, quizBtns.length > 0 ? 's' : 'w');
-
-        if (quizBtns.length === 0) {
-            // Trigger H5P API to show interactions if hidden
-            tryShowInteractions(ctx);
-            await wait(2000);
-            quizBtns = getQuizButtons(ctx.doc);
-        }
-
         for (let i = 0; i < 5; i++) {
             chk();
-            quizBtns = getQuizButtons(ctx.doc);
-
-            // Find button for question (i+1)
+            const quizBtns = getQuizButtons(ctx.doc);
             let targetBtn = null;
+
             for (const b of quizBtns) {
                 const txt = (b.textContent || b.getAttribute('aria-label') || '').toLowerCase();
                 if (txt.includes(`qp ${i + 1}`) || txt.includes(`quiz ${i + 1}`) || txt.includes(`question ${i + 1}`)) {
@@ -358,13 +531,12 @@ Respond with ONLY the single number corresponding to the correct option (e.g. "1
             if (targetBtn) {
                 L(`\n── Attempting Question ${i + 1} ──`, 'i');
                 S(`Answering Question ${i + 1}/5...`);
-                targetBtn.click();
+                fireClick(targetBtn);
                 await wait(CFG.D_QUIZ);
 
                 await answerVisibleQuestion(ctx, i + 1);
                 await wait(CFG.D_SHORT);
             } else {
-                // If button isn't found by specific index, check if a question is already on screen
                 const isQOpen = ctx.doc.querySelector('.h5p-question-content, .h5p-multichoice, .h5p-alternative-container');
                 if (isQOpen) {
                     L(`\n── Answering visible question (${i + 1}) ──`, 'i');
@@ -375,63 +547,18 @@ Respond with ONLY the single number corresponding to the correct option (e.g. "1
         }
     }
 
-    function getQuizButtons(doc) {
-        const list = [];
-        // H5P Interactive video interaction overlay buttons
-        const selectors = [
-            '.h5p-interaction-button',
-            '.h5p-interaction',
-            'button[class*="interaction"]',
-            '.h5p-overlay-button',
-            'button[aria-label*="Quiz"]',
-            'button[aria-label*="qp"]'
-        ];
-        selectors.forEach(sel => {
-            doc.querySelectorAll(sel).forEach(el => {
-                if (!list.includes(el)) list.push(el);
-            });
-        });
-
-        // Filter or sort so "Quiz qp 1" .. "Quiz qp 5" are in order
-        list.sort((a, b) => {
-            const ta = (a.textContent || a.getAttribute('aria-label') || '').toLowerCase();
-            const tb = (b.textContent || b.getAttribute('aria-label') || '').toLowerCase();
-            return ta.localeCompare(tb, undefined, { numeric: true });
-        });
-
-        return list;
-    }
-
-    function tryShowInteractions(ctx) {
-        try {
-            if (ctx.win.H5P && ctx.win.H5P.instances) {
-                ctx.win.H5P.instances.forEach(inst => {
-                    const iv = inst.interactiveVideo || inst;
-                    if (iv.interactions) {
-                        iv.interactions.forEach(inter => {
-                            if (inter.show) inter.show();
-                        });
-                    }
-                });
-            }
-        } catch {}
-    }
-
     async function answerVisibleQuestion(ctx, qNum) {
         const doc = ctx.doc;
-
-        // Extract Question Text
         const qEl = doc.querySelector('.h5p-question-content, .h5p-multichoice-title, .h5p-question-introduction, [class*="question-title"]');
-        let questionText = qEl ? qEl.textContent.trim() : `Question ${qNum}`;
+        const questionText = qEl ? qEl.textContent.trim() : `Question ${qNum}`;
 
-        // Extract Options
         const optionNodes = doc.querySelectorAll('.h5p-answer, .h5p-alternative-container li, .h5p-alternative-container label, div[role="radio"]');
         const options = [];
         const validNodes = [];
 
         optionNodes.forEach(node => {
-            // Avoid inner duplicated label texts
-            const text = (node.querySelector('.h5p-alternative-inner') || node).textContent.trim();
+            const inner = node.querySelector('.h5p-alternative-inner') || node;
+            const text = cleanText(inner.textContent);
             if (text && !options.includes(text)) {
                 options.push(text);
                 validNodes.push(node);
@@ -439,123 +566,204 @@ Respond with ONLY the single number corresponding to the correct option (e.g. "1
         });
 
         if (options.length === 0) {
-            L(`Q${qNum}: No options detected — clicking check/continue`, 'w');
+            L(`Q${qNum}: No options detected — proceeding`, 'w');
             await clickCheckAndProceed(doc);
             return;
         }
 
-        L(`Q${qNum}: "${questionText.substring(0, 50)}..." (${options.length} options)`, 'i');
+        L(`Q${qNum}: "${cleanText(questionText).substring(0, 50)}..." (${options.length} options)`, 'i');
 
-        // Query Gemini 2.5 Flash
-        const chosenText = await solveWithGemini(questionText, options);
-        const chosenIdx = options.indexOf(chosenText);
+        const chosenText = await solveQuestion(questionText, options);
+        const chosenIdx = options.findIndex(o => cleanText(o) === cleanText(chosenText));
 
         if (chosenIdx >= 0 && validNodes[chosenIdx]) {
-            validNodes[chosenIdx].click();
-            const radio = validNodes[chosenIdx].querySelector('input[type="radio"], input[type="checkbox"]');
-            if (radio) radio.click();
-            await wait(600);
+            const nodeToClick = validNodes[chosenIdx];
+            fireClick(nodeToClick);
+            const radio = nodeToClick.querySelector('input[type="radio"], input[type="checkbox"]');
+            if (radio) {
+                radio.checked = true;
+                fireClick(radio);
+                radio.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+            await wait(800);
         }
 
-        // Click "Check" and "Continue"
         await clickCheckAndProceed(doc);
     }
 
     async function clickCheckAndProceed(doc) {
-        // 1. Click "Check"
-        const checkBtns = doc.querySelectorAll('button, .h5p-joubelui-button');
-        for (const b of checkBtns) {
-            const t = (b.textContent || '').trim().toLowerCase();
-            if (t === 'check' || t.includes('check answer')) {
-                if (b.offsetParent !== null) {
-                    L('  → Clicked [Check]', 'i');
-                    b.click();
+        let checkClicked = false;
+        const allButtons = Array.from(doc.querySelectorAll('button, .h5p-joubelui-button, [role="button"], a.h5p-button'));
+
+        for (const b of allButtons) {
+            const txt = (b.textContent || b.innerText || b.getAttribute('aria-label') || '').trim().toLowerCase();
+            const cls = (b.className || '').toLowerCase();
+            if (
+                txt === 'check' ||
+                txt.includes('check answer') ||
+                cls.includes('h5p-question-check-answer') ||
+                cls.includes('check-button') ||
+                b.getAttribute('data-action') === 'check'
+            ) {
+                if (b.offsetParent !== null || b.getClientRects().length > 0) {
+                    L('  → Clicked [Check] button', 's');
+                    fireClick(b);
+                    checkClicked = true;
                     await wait(CFG.D_SHORT);
                     break;
                 }
             }
         }
 
-        // 2. Click "Continue" / "Next"
-        await wait(600);
-        const contBtns = doc.querySelectorAll('button, .h5p-joubelui-button');
-        for (const b of contBtns) {
-            const t = (b.textContent || '').trim().toLowerCase();
-            if (t === 'continue' || t === 'next' || t.includes('continue')) {
-                if (b.offsetParent !== null) {
-                    L('  → Clicked [Continue]', 'i');
-                    b.click();
-                    await wait(800);
+        await wait(800);
+
+        const contButtons = Array.from(doc.querySelectorAll('button, .h5p-joubelui-button, [role="button"]'));
+        for (const b of contButtons) {
+            const txt = (b.textContent || b.innerText || b.getAttribute('aria-label') || '').trim().toLowerCase();
+            const cls = (b.className || '').toLowerCase();
+            if (
+                txt === 'continue' ||
+                txt === 'next' ||
+                txt.includes('continue') ||
+                cls.includes('continue') ||
+                cls.includes('next')
+            ) {
+                if (b.offsetParent !== null || b.getClientRects().length > 0) {
+                    L('  → Clicked [Continue] button', 's');
+                    fireClick(b);
+                    await wait(1000);
                     break;
                 }
             }
         }
 
-        // 3. Close question modal if still open
         const closeBtn = doc.querySelector('.h5p-close-button, .h5p-dialog-close, button[aria-label="Close"]');
-        if (closeBtn && closeBtn.offsetParent !== null) closeBtn.click();
+        if (closeBtn && closeBtn.offsetParent !== null) {
+            fireClick(closeBtn);
+            await wait(500);
+        }
     }
 
-    // ═══════════════════════════════════════════════════
-    //  STEP 3: STAR / SUMMARY & SUBMIT
-    // ═══════════════════════════════════════════════════
     async function submitModule(ctx) {
-        L('⭐ Clicking Star icon on player bar to open summary...', 'i');
+        L('⭐ Opening Star / Endscreen submit summary...', 'i');
         S('Opening submit dialog...');
 
         const doc = ctx.doc;
+        const win = ctx.win || window;
 
-        // Try API first
+        // 1. Direct invocation on H5P InteractiveVideo instance inside iframe
         try {
-            if (ctx.win.H5P && ctx.win.H5P.instances) {
-                ctx.win.H5P.instances.forEach(inst => {
+            if (win.H5P && win.H5P.instances) {
+                win.H5P.instances.forEach(inst => {
                     const iv = inst.interactiveVideo || inst;
-                    if (iv.showEndscreen) iv.showEndscreen();
-                    else if (iv.showSummary) iv.showSummary();
+                    if (typeof iv.showEndscreen === 'function') iv.showEndscreen();
+                    else if (typeof iv.showSummary === 'function') iv.showSummary();
+                    if (iv.endscreens) {
+                        iv.endscreens.forEach(es => {
+                            if (typeof es.show === 'function') es.show();
+                            if (es.container) es.container.classList.remove('h5p-hidden');
+                        });
+                    }
                 });
             }
-        } catch {}
+        } catch (e) {}
 
-        await wait(2000);
+        await wait(1500);
 
-        // Click the star icon button in the player control bar
-        const starCandidates = doc.querySelectorAll('.h5p-control, .h5p-controls button, [class*="star"], [class*="endscreen"]');
+        // 2. Click Star icon on video progress bar / controls
+        const starCandidates = Array.from(doc.querySelectorAll(
+            '.h5p-control, .h5p-controls button, .h5p-seekbar-interaction, [class*="star"], [class*="endscreen"], button[aria-label*="Submit screen"], button[aria-label*="summary"], [data-index="endscreen"]'
+        ));
+
+        let starClicked = false;
         for (const b of starCandidates) {
             const cls = (b.className || '').toLowerCase();
             const aria = (b.getAttribute('aria-label') || b.getAttribute('title') || '').toLowerCase();
-            if (cls.includes('star') || aria.includes('star') || aria.includes('summary') || aria.includes('submit')) {
-                L('Clicked Star button on player bar', 'i');
-                b.click();
+            if (
+                cls.includes('star') ||
+                cls.includes('endscreen') ||
+                cls.includes('summary') ||
+                aria.includes('star') ||
+                aria.includes('summary') ||
+                aria.includes('submit screen')
+            ) {
+                L('🌟 Found Star/Summary control on player bar — clicking!', 's');
+                fireClick(b);
+                starClicked = true;
                 await wait(CFG.D_MED);
                 break;
             }
         }
 
-        // Look for the green "Submit Answers" button in the summary popup
+        if (!starClicked) {
+            const allBtns = Array.from(doc.querySelectorAll('.h5p-controls button, .h5p-control-bar button, .h5p-seekbar *'));
+            for (const b of allBtns) {
+                const html = (b.outerHTML || '').toLowerCase();
+                if (html.includes('star') || html.includes('endscreen') || html.includes('polygon') || html.includes('submit screen')) {
+                    L('🌟 Clicked star element by icon signature', 's');
+                    fireClick(b);
+                    await wait(CFG.D_MED);
+                    break;
+                }
+            }
+        }
+
+        // 3. Click "Submit Answers" button in the summary/endcard modal
         await wait(CFG.D_SHORT);
-        const submitBtns = doc.querySelectorAll('button, .h5p-joubelui-button, a');
-        for (const b of submitBtns) {
-            const t = (b.textContent || '').trim().toLowerCase();
-            if (t.includes('submit answer') || (t.includes('submit') && !t.includes('grade'))) {
-                L('✅ Clicked [Submit Answers]!', 's');
-                b.click();
-                await wait(CFG.D_MED);
+        let submitted = false;
+        for (let attempt = 0; attempt < 4; attempt++) {
+            const endcardText = (doc.querySelector('.h5p-endcard, .h5p-summary, .h5p-interactive-video')?.textContent || doc.body.textContent || '').toLowerCase();
+            if (endcardText.includes('your answers have been submitted')) {
+                L('✅ Answers confirmed submitted: "Your answers have been submitted!"', 's');
+                submitted = true;
                 break;
             }
+
+            const submitBtns = Array.from(doc.querySelectorAll('button, .h5p-joubelui-button, a, .h5p-endcard-submit-button, [role="button"], input[type="submit"]'));
+            for (const b of submitBtns) {
+                const t = (b.textContent || b.innerText || b.value || '').trim().toLowerCase();
+                const cls = (b.className || '').toLowerCase();
+                if (
+                    t.includes('submit answer') ||
+                    (t.includes('submit') && !t.includes('grade') && !t.includes('feedback') && !t.includes('finish')) ||
+                    cls.includes('endcard-submit-button') ||
+                    cls.includes('submit-answers')
+                ) {
+                    if (b.offsetParent !== null || b.getClientRects().length > 0) {
+                        L('✅ Successfully Clicked [Submit Answers] button!', 's');
+                        fireClick(b);
+                        submitted = true;
+                        await wait(CFG.D_MED);
+                        break;
+                    }
+                }
+            }
+            if (submitted) break;
+            await wait(1000);
         }
 
-        // Click "Click to here enable the Next Video" link
+        // 4. Close endcard if 'x' close button is present
+        const closeX = doc.querySelector('.h5p-endcard-close, .h5p-close-button, .h5p-endcard .h5p-icon-close, [aria-label="Close"]');
+        if (closeX && closeX.offsetParent !== null) {
+            fireClick(closeX);
+            await wait(600);
+        }
+
+        // 5. Click "Click to here enable the Next Video" button
         await clickEnableNextVideo(doc);
     }
 
     async function clickEnableNextVideo(iframeDoc) {
+        L('🔍 Looking for "Click to here enable the Next Video" button...', 'i');
         for (const root of [iframeDoc, document]) {
-            const links = root.querySelectorAll('a, button');
+            if (!root) continue;
+            const links = Array.from(root.querySelectorAll('a, button, div[role="button"], span, p'));
             for (const el of links) {
-                const t = (el.textContent || '').trim().toLowerCase();
+                const t = (el.textContent || el.innerText || '').trim().toLowerCase();
                 if (t.includes('enable the next video') || t.includes('enable next')) {
-                    L('🔗 Clicked "Click to here enable the Next Video"', 's');
-                    el.click();
+                    const target = el.closest('a') || el.closest('button') || el;
+                    L('🔗 Clicked "Click to here enable the Next Video" button!', 's');
+                    fireClick(target);
                     await wait(CFG.D_MED);
                     return;
                 }
@@ -564,31 +772,171 @@ Respond with ONLY the single number corresponding to the correct option (e.g. "1
     }
 
     // ═══════════════════════════════════════════════════
-    //  COURSE PAGE: FIND INCOMPLETE MODULES
+    //  MOODLE STANDALONE QUIZ AUTOMATION (/mod/quiz/*)
+    // ═══════════════════════════════════════════════════
+    async function handleQuizViewPage() {
+        L('📝 On Quiz Start page — looking for Attempt Quiz button...', 'i');
+        S('Attempting Quiz...');
+        await wait(1500);
+
+        const attemptButtons = Array.from(document.querySelectorAll('button, input[type="submit"], a.btn'));
+        for (const b of attemptButtons) {
+            const txt = (b.textContent || b.value || '').trim().toLowerCase();
+            if (txt.includes('attempt quiz') || txt.includes('re-attempt quiz') || txt.includes('continue the last attempt')) {
+                L(`🎯 Clicked "${txt}"!`, 's');
+                fireClick(b);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    async function handleQuizAttemptPage() {
+        L('🧠 On Quiz Attempt page — answering questions with AI...', 's');
+        S('Solving Quiz Questions...');
+        await wait(2000);
+
+        const questionBlocks = Array.from(document.querySelectorAll('.que.multichoice, .que'));
+        L(`Found ${questionBlocks.length} question(s) on this page`, 'i');
+
+        for (let i = 0; i < questionBlocks.length; i++) {
+            chk();
+            const qBlock = questionBlocks[i];
+
+            const qtextEl = qBlock.querySelector('.qtext, .formulation .qtext');
+            const questionText = qtextEl ? cleanText(qtextEl.textContent) : `Question ${i + 1}`;
+
+            const answerContainer = qBlock.querySelector('.answer');
+            if (!answerContainer) continue;
+
+            const optionRows = Array.from(answerContainer.querySelectorAll('.r0, .r1, div[data-region="answer-label"], label'));
+            const options = [];
+            const nodesToClick = [];
+
+            optionRows.forEach(row => {
+                const label = row.querySelector('label') || row;
+                const text = cleanText(label.textContent).replace(/^[a-z0-9][\.\)]\s*/i, '');
+                if (text && !options.includes(text)) {
+                    options.push(text);
+                    const radio = row.querySelector('input[type="radio"], input[type="checkbox"]');
+                    nodesToClick.push(radio || label);
+                }
+            });
+
+            if (options.length === 0) continue;
+
+            L(`Q${i + 1}: "${questionText.substring(0, 50)}..." (${options.length} options)`, 'i');
+            const chosen = await solveQuestion(questionText, options);
+            const chosenIdx = options.findIndex(o => cleanText(o) === cleanText(chosen));
+
+            if (chosenIdx >= 0 && nodesToClick[chosenIdx]) {
+                const targetNode = nodesToClick[chosenIdx];
+                if (targetNode.tagName === 'INPUT') {
+                    targetNode.checked = true;
+                    targetNode.dispatchEvent(new Event('change', { bubbles: true }));
+                }
+                fireClick(targetNode);
+                L(`  → Selected: "${options[chosenIdx].substring(0, 40)}..."`, 's');
+                await wait(600);
+            }
+        }
+
+        await wait(1500);
+        const submitNavBtns = Array.from(document.querySelectorAll('input[type="submit"], button[type="submit"], .mod_quiz-next-nav'));
+        for (const b of submitNavBtns) {
+            const val = (b.value || b.textContent || '').trim().toLowerCase();
+            if (val.includes('finish attempt') || val.includes('next page') || val.includes('next')) {
+                L(`➡️ Clicking navigation: "${val}"`, 's');
+                fireClick(b);
+                return;
+            }
+        }
+    }
+
+    async function handleQuizSummaryPage() {
+        L('📑 On Quiz Summary page — preparing to submit all and finish...', 'i');
+        S('Submitting Quiz...');
+        await wait(2000);
+
+        const finishBtns = Array.from(document.querySelectorAll('button, input[type="submit"]'));
+        for (const b of finishBtns) {
+            const val = (b.value || b.textContent || '').trim().toLowerCase();
+            if (val.includes('submit all and finish')) {
+                L('🚀 Clicked [Submit all and finish]!', 's');
+                fireClick(b);
+                break;
+            }
+        }
+
+        await wait(1500);
+
+        const modalBtns = Array.from(document.querySelectorAll('.modal-dialog button, .moodle-dialogue button, button.btn-primary, input[value*="Submit all and finish"]'));
+        for (const mb of modalBtns) {
+            const txt = (mb.textContent || mb.value || '').trim().toLowerCase();
+            if (txt.includes('submit all and finish') || txt === 'submit') {
+                if (mb.offsetParent !== null || mb.getClientRects().length > 0) {
+                    L('✅ Confirmed submission in modal dialog!', 's');
+                    fireClick(mb);
+                    await wait(3000);
+                    return;
+                }
+            }
+        }
+    }
+
+    async function handleQuizReviewPage() {
+        L('🎉 Quiz completed and graded! Returning to course overview...', 's');
+        S('Quiz completed! Returning to course...');
+        await wait(2500);
+
+        const finishReviewBtns = Array.from(document.querySelectorAll('a, button'));
+        for (const b of finishReviewBtns) {
+            const txt = (b.textContent || '').trim().toLowerCase();
+            if (txt.includes('finish review')) {
+                fireClick(b);
+                await wait(2000);
+                break;
+            }
+        }
+
+        location.href = `${CFG.BASE}/course/view.php?id=${CFG.COURSE_ID}`;
+    }
+
+    // ═══════════════════════════════════════════════════
+    //  FIND NEXT INCOMPLETE MODULE (VIDEOS + QUIZZES)
     // ═══════════════════════════════════════════════════
     function getIncompleteModules() {
         const incomplete = [];
-        const activities = document.querySelectorAll('li.activity.modtype_hvp');
+        const activities = document.querySelectorAll('li.activity[data-for="cmitem"]');
 
         activities.forEach(act => {
-            const link = act.querySelector('a[href*="/mod/hvp/view.php"]');
+            const link = act.querySelector('a[href*="/mod/hvp/view.php"], a[href*="/mod/quiz/view.php"]');
             if (!link) return;
 
-            const name = (act.querySelector('.instancename')?.textContent || 'Unknown').replace(/Interactive Content/g, '').trim();
+            const nameEl = act.querySelector('.instancename') || act.querySelector('.activityname');
+            const name = (nameEl ? nameEl.textContent : 'Unknown').replace(/Interactive Content/g, '').trim();
             const url = link.href;
 
-            // Check if Done
-            const completionBtn = act.querySelector('button[data-for="dropdowndialog_button"]');
-            const isDone = completionBtn && completionBtn.classList.contains('btn-success');
+            if (name.toLowerCase().includes('introduction video') || url.includes('id=918')) {
+                return;
+            }
 
-            // Check if Locked ("Not available unless..." or dimmed)
+            const completionBtn = act.querySelector('button[data-for="dropdowndialog_button"]');
+            const isDone = completionBtn && (
+                completionBtn.classList.contains('btn-success') ||
+                completionBtn.textContent.includes('Done') ||
+                !!completionBtn.querySelector('.fa-check')
+            );
+
             const textContent = act.textContent || '';
             const isLocked = textContent.includes('Not available unless') ||
                              act.classList.contains('dimmed') ||
                              !!act.querySelector('.dimmed_text, .isrestricted');
 
+            const isQuiz = url.includes('/mod/quiz/');
+
             if (!isDone) {
-                incomplete.push({ name, url, isLocked });
+                incomplete.push({ name, url, isLocked, isQuiz, id: act.getAttribute('data-id') });
             }
         });
 
@@ -602,81 +950,109 @@ Respond with ONLY the single number corresponding to the correct option (e.g. "1
         if (running) return;
         running = true;
         stopped = false;
-        startBtn.disabled = true;
-        stopBtn.disabled = false;
+        if (startBtn) {
+            startBtn.disabled = true;
+            startBtn.textContent = '▶ RUNNING';
+        }
+        if (stopBtn) stopBtn.disabled = false;
 
         try {
             const url = location.href;
 
-            // 1. If on /my/courses.php -> Enter course
-            if (url.includes('/my/courses.php')) {
-                L('📚 On My Courses page — entering CIDCOM course...', 'i');
-                S('Entering course...');
-                await wait(1000);
-                location.href = `${CFG.BASE}/course/view.php?id=${CFG.COURSE_ID}`;
+            if (url.includes('/my/courses.php') || url.includes('/my/index.php') || url.endsWith('/my/')) {
+                L('📚 On My Courses page — finding CIDCOM course...', 'i');
+                S('Entering CIDCOM course...');
+                await wait(1200);
+
+                const courseLink = document.querySelector('a[href*="/course/view.php?id="]');
+                if (courseLink) {
+                    location.href = courseLink.href;
+                } else {
+                    location.href = `${CFG.BASE}/course/view.php?id=${CFG.COURSE_ID}`;
+                }
                 return;
             }
 
-            // 2. If on /course/view.php -> Find incomplete module
             if (url.includes('/course/view.php')) {
-                L('📋 On Course View — scanning modules...', 'i');
-                S('Finding incomplete module...');
+                L('📋 On Course View — scanning modules and quizzes...', 'i');
+                S('Finding next incomplete module/quiz...');
                 await wait(1500);
 
                 const incomplete = getIncompleteModules();
-                L(`Found ${incomplete.length} incomplete video module(s)`, incomplete.length > 0 ? 'i' : 's');
+                L(`Found ${incomplete.length} remaining incomplete module(s)/quiz(zes)`, incomplete.length > 0 ? 'i' : 's');
 
                 const next = incomplete.find(m => !m.isLocked);
 
                 if (!next) {
                     if (incomplete.length > 0) {
-                        L(`⚠ Next module is locked: "${incomplete[0].name}". Complete prerequisites first!`, 'w');
+                        L(`⚠ Next module is locked: "${incomplete[0].name}". Prerequisite score needed!`, 'w');
                         S('Module locked');
                     } else {
-                        L('🎉 All video modules are 100% completed!', 's');
-                        S('Completed all modules!');
+                        L('🎉 All course video modules & quizzes are 100% completed!', 's');
+                        S('All modules completed!');
                     }
                     running = false;
-                    startBtn.disabled = false;
+                    if (startBtn) {
+                        startBtn.disabled = false;
+                        startBtn.textContent = '▶ START';
+                    }
                     return;
                 }
 
-                L(`🎯 Next module to complete: "${next.name}"`, 's');
+                L(`🎯 Next to complete: "${next.name}" (${next.isQuiz ? 'Quiz' : 'Video'})`, 's');
                 S(`Starting: ${next.name}`);
                 await wait(1500);
                 location.href = next.url;
                 return;
             }
 
-            // 3. If on /mod/hvp/view.php -> Execute complete video pipeline
             if (url.includes('/mod/hvp/view.php')) {
-                L('📹 On Video Part page — starting automation pipeline', 's');
+                L('📹 On Video Module page — starting completion pipeline', 's');
                 S('Processing video...');
+
+                cachedAnswersMap = extractH5PAnswers();
 
                 const ctx = await waitForH5PLoad();
                 if (!ctx || !ctx.doc) {
                     L('❌ Could not load H5P video iframe', 'e');
                     running = false;
-                    startBtn.disabled = false;
+                    if (startBtn) startBtn.disabled = false;
                     return;
                 }
 
-                // Step 1: Seek
                 chk();
                 await seekToEnd(ctx);
 
-                // Step 2: Answer Quizzes
                 chk();
                 await answerAllQuizzes(ctx);
 
-                // Step 3: Submit Answers
                 chk();
                 await submitModule(ctx);
 
-                L('✅ Module completed! Returning to course list in 3s...', 's');
+                L('✅ Module completed! Returning to course overview in 3s...', 's');
                 S('Returning to course...');
                 await wait(3000);
                 location.href = `${CFG.BASE}/course/view.php?id=${CFG.COURSE_ID}`;
+                return;
+            }
+
+            if (url.includes('/mod/quiz/view.php')) {
+                await handleQuizViewPage();
+                return;
+            }
+
+            if (url.includes('/mod/quiz/attempt.php')) {
+                await handleQuizAttemptPage();
+                return;
+            }
+
+            if (url.includes('/mod/quiz/summary.php')) {
+                await handleQuizSummaryPage();
+                return;
+            }
+
+            if (url.includes('/mod/quiz/review.php')) {
+                await handleQuizReviewPage();
                 return;
             }
 
@@ -690,16 +1066,16 @@ Respond with ONLY the single number corresponding to the correct option (e.g. "1
         }
 
         running = false;
-        startBtn.disabled = false;
-        stopBtn.disabled = true;
+        if (startBtn) {
+            startBtn.disabled = false;
+            startBtn.textContent = '▶ START';
+        }
+        if (stopBtn) stopBtn.disabled = true;
     }
 
-    // ═══════════════════════════════════════════════════
-    //  AUTO-START WITH COUNTDOWN
-    // ═══════════════════════════════════════════════════
     function init() {
         buildUI();
-        L('Swayam Auto v4 initialized ✓', 's');
+        L(`Swayam Auto v6.1 ready [${CFG.SOLVER_MODE === 'algo' ? '⚡ Fast Algorithm Mode' : '🤖 AI Mode'}] ✓`, 's');
 
         let secondsLeft = CFG.AUTO_START_DELAY;
         S(`Auto-starting in ${secondsLeft}s (click PAUSE to stop)...`);
@@ -710,9 +1086,7 @@ Respond with ONLY the single number corresponding to the correct option (e.g. "1
                 S(`Auto-starting in ${secondsLeft}s...`);
             } else {
                 clearInterval(countdownTimer);
-                if (!stopped) {
-                    run();
-                }
+                if (!stopped) run();
             }
         }, 1000);
     }

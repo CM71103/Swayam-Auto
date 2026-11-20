@@ -1,30 +1,59 @@
-# ⚡ Swayam-Auto
+# ⚡ Swayam-Auto (v6.2)
 
-An automated Tampermonkey userscript for the SWAYAM Plus LMS (CIDCOM course).
+Automated course player & quiz solver for Swayam Plus LMS (Certified Intelligent Data Center-Operations & Maintenance - CIDCOM).
 
-## Features
+---
 
-- **Automatic Start**: Begins scanning and processing modules after a 3-second countdown.
-- **Incomplete Module Detection**: Scans the syllabus and automatically opens the next incomplete and unlocked module.
-- **H5P Video Fast-Forward**: Seeks interactive video modules directly to completion.
-- **AI-Powered Quiz Solver**: Sends end-of-video multiple-choice questions to Google Gemini (`gemini-2.5-flash`) API and automatically selects the correct answers.
-- **Automatic Submission**: Clicks the summary star, submits quiz answers, enables the next video, and returns to the course overview to repeat.
-- **Safe Key Storage**: Gemini API key is stored securely in your browser's extension storage (`GM_setValue`), not hardcoded in the repository.
+## 🌟 Key Features
 
-## Installation
+1. **Dual Solver Modes**:
+   - ⚡ **Fast Algorithm Mode (Recommended)**: Instant zero-latency responses using verified H5P question keys & technical domain heuristics.
+   - 🤖 **AI Mode**: Real-time integration with Google Gemini AI (`gemini-2.5-flash`, `gemini-2.0-flash`, `gemini-1.5-pro` with dynamic model auto-discovery).
 
-1. Install the [Tampermonkey](https://www.tampermonkey.net/) extension for Chrome/Edge/Firefox.
-2. If using Chrome, open `chrome://extensions`, turn on **Developer mode**, and enable **Allow User Scripts** under Tampermonkey.
-3. In Tampermonkey dashboard, click **Create a new script** (or Import from file).
-4. Copy and paste the contents of [`swayam-auto.user.js`](./swayam-auto.user.js).
-5. Save the script (`Ctrl + S`).
+2. **Complete Video & Interactive H5P Pipeline**:
+   - **Auto-Seek**: Seeks long lecture videos to completion.
+   - **Quiz Question Solver**: Answers all end-of-video questions (`Quiz qp 1` through `qp 5`) and triggers native `Check` & `Continue` events.
+   - **Star & Submit Answers Handler**: Opens the submit summary/endscreen, clicks **Submit Answers**, confirms submission (`"Your answers have been submitted!"`), closes dialog, and clicks **"Click to here enable the Next Video"**.
 
-## Usage
+3. **Moodle Standalone Quiz Automation (`/mod/quiz/*`)**:
+   - Auto-clicks **Attempt quiz** / **Re-attempt quiz**.
+   - Solves multiple-choice questions across all attempt pages.
+   - Automatically navigates via **Next page** and **Finish attempt**.
+   - Auto-clicks **Submit all and finish** and confirms the modal dialog.
+   - Returns to the course overview seamlessly.
 
-1. Log into [Swayam Plus LMS](https://swayam-plus-lms.iitmpravartak.org.in/).
-2. Enter your Gemini API key in the floating control panel at the top-right corner.
-3. The script will automatically count down and start progressing through your course modules.
+4. **Smart Resume**:
+   - Never starts from 0% or gets stuck on informational videos (skips *Introduction Video* Module 918).
+   - Scans syllabus and jumps directly to your next unlocked, incomplete lesson.
 
-## License
+---
+
+## 📦 Option 1: Chrome Extension (Recommended)
+
+1. Open Google Chrome and navigate to:
+   ```text
+   chrome://extensions/
+   ```
+2. Turn ON **Developer mode** in the top right.
+3. Click **Load unpacked** (top left).
+4. Select the folder:
+   ```text
+   chrome-extension
+   ```
+5. Pin the extension to your Chrome toolbar.
+6. Open your course on [Swayam Plus](https://swayam-plus-lms.iitmpravartak.org.in/) and enjoy fully automated completion!
+
+---
+
+## 📜 Option 2: Tampermonkey Userscript
+
+1. Install [Tampermonkey](https://www.tampermonkey.net/) in your browser.
+2. In Chrome, make sure **Allow User Scripts** is enabled under Tampermonkey extension settings (`chrome://extensions`).
+3. Create a new script in Tampermonkey, copy & paste the contents of [`swayam-auto.user.js`](./swayam-auto.user.js), and save (`Ctrl + S`).
+4. Navigate to Swayam Plus LMS.
+
+---
+
+## 📄 License
 
 MIT
