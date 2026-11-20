@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Swayam Auto Settings</title>
+  <style>
+    body {
+      width: 320px;
+      margin: 0;
+      padding: 16px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #12131f;
+      color: #e2e8f0;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 14px;
+      border-bottom: 1px solid #2d3748;
+      padding-bottom: 10px;
+    }
+    .header h2 {
+      margin: 0;
+      font-size: 16px;
+      font-weight: 700;
+      color: #818cf8;
+    }
+    .badge {
+      background: #4f46e5;
+      color: white;
+      font-size: 10px;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-weight: 600;
+    }
+    .field {
+      margin-bottom: 12px;
+    }
+    label {
+      display: block;
+      font-size: 11px;
+      font-weight: 600;
+      color: #94a3b8;
+      text-transform: uppercase;
+      margin-bottom: 4px;
+      letter-spacing: 0.5px;
+    }
+    input[type="text"], input[type="password"] {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 8px 10px;
+      background: #1e2238;
+      border: 1px solid #3b4261;
+      border-radius: 6px;
+      color: #fff;
+      font-size: 12px;
+      outline: none;
+    }
+    input:focus {
+      border-color: #6366f1;
+    }
+    .checkbox-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 14px;
+      font-size: 12px;
+      color: #cbd5e1;
+    }
+    .btn {
+      width: 100%;
+      padding: 9px 12px;
+      background: #10b981;
+      border: none;
+      border-radius: 6px;
+      color: white;
+      font-weight: 700;
+      font-size: 13px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .btn:hover {
+      background: #059669;
+    }
+    .btn-secondary {
+      background: #475569;
+      margin-top: 8px;
+    }
+    .btn-secondary:hover {
+      background: #334155;
+    }
+    .status {
+      margin-top: 10px;
+      font-size: 11px;
+      text-align: center;
+      color: #38bdf8;
+      min-height: 16px;
+    }
+    .help {
+      margin-top: 14px;
+      font-size: 11px;
+      color: #94a3b8;
+      line-height: 1.4;
+      border-top: 1px solid #2d3748;
+      padding-top: 10px;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h2>⚡ Swayam Auto v5</h2>
+    <span class="badge">PRO</span>
+  </div>
+
+  <div class="field">
+    <label for="apiKey">Gemini API Key</label>
+    <input type="password" id="apiKey" placeholder="AIzaSy... (needed for AI Mode)">
+  </div>
+
+  <div class="field">
+    <label for="solverMode">Answer Solver Mode</label>
+    <select id="solverMode" style="width:100%; box-sizing:border-box; padding:8px 10px; background:#1e2238; border:1px solid #3b4261; border-radius:6px; color:#fff; font-size:12px; outline:none;">
+      <option value="algo">⚡ Fast Algorithm Mode (Instant response & Official Key)</option>
+      <option value="ai">🤖 AI Mode (Gemini API Key)</option>
+    </select>
+  </div>
+
+  <div class="field">
+    <label for="courseId">Course ID (Optional)</label>
+    <input type="text" id="courseId" placeholder="20 (Auto-detected if blank)">
+  </div>
+
+  <div class="checkbox-row">
+    <input type="checkbox" id="autoStart" checked>
+    <label for="autoStart" style="margin:0; text-transform:none;">Enable Auto-Start on page load</label>
+  </div>
+
+  <button class="btn" id="saveBtn">Save Settings</button>
+  <button class="btn btn-secondary" id="triggerBtn">Open Swayam LMS</button>
+
+  <div class="status" id="statusMsg"></div>
+
+  <div class="help">
+    💡 <b>Tip:</b> If an API key is provided, Gemini 2.0/1.5 will verify tricky questions. The extension also extracts verified 100% correct answers directly from the H5P lesson bundle!
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

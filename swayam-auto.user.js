@@ -656,8 +656,12 @@ Respond with ONLY the single number corresponding to the correct option (e.g. "1
             if (win.H5P && win.H5P.instances) {
                 win.H5P.instances.forEach(inst => {
                     const iv = inst.interactiveVideo || inst;
+                    if (typeof iv.toggleEndscreen === 'function') iv.toggleEndscreen(true);
                     if (typeof iv.showEndscreen === 'function') iv.showEndscreen();
-                    else if (typeof iv.showSummary === 'function') iv.showSummary();
+                    if (typeof iv.showSummary === 'function') iv.showSummary();
+                    if (iv.bubbleEndscreen && typeof iv.bubbleEndscreen.toggle === 'function') {
+                        iv.bubbleEndscreen.toggle(true, true);
+                    }
                     if (iv.endscreens) {
                         iv.endscreens.forEach(es => {
                             if (typeof es.show === 'function') es.show();
@@ -671,8 +675,9 @@ Respond with ONLY the single number corresponding to the correct option (e.g. "1
         await wait(1500);
 
         // 2. Click Star icon on video progress bar / controls
+        // In H5P source: class is '.h5p-star', '.h5p-star-bar', '.h5p-control.h5p-star', or controls.$endscreensButton
         const starCandidates = Array.from(doc.querySelectorAll(
-            '.h5p-control, .h5p-controls button, .h5p-seekbar-interaction, [class*="star"], [class*="endscreen"], button[aria-label*="Submit screen"], button[aria-label*="summary"], [data-index="endscreen"]'
+            '.h5p-star, .h5p-star-bar, .h5p-star-background, .h5p-control.h5p-star, .h5p-controls .h5p-star, .h5p-control, .h5p-controls button, .h5p-seekbar-interaction, [class*="star"], [class*="endscreen"], button[aria-label*="Submit screen"], button[aria-label*="summary"], [data-index="endscreen"]'
         ));
 
         let starClicked = false;
@@ -680,6 +685,7 @@ Respond with ONLY the single number corresponding to the correct option (e.g. "1
             const cls = (b.className || '').toLowerCase();
             const aria = (b.getAttribute('aria-label') || b.getAttribute('title') || '').toLowerCase();
             if (
+                cls.includes('h5p-star') ||
                 cls.includes('star') ||
                 cls.includes('endscreen') ||
                 cls.includes('summary') ||
@@ -687,7 +693,7 @@ Respond with ONLY the single number corresponding to the correct option (e.g. "1
                 aria.includes('summary') ||
                 aria.includes('submit screen')
             ) {
-                L('🌟 Found Star/Summary control on player bar — clicking!', 's');
+                L('🌟 Found Star element on player bar — clicking!', 's');
                 fireClick(b);
                 starClicked = true;
                 await wait(CFG.D_MED);
@@ -696,7 +702,7 @@ Respond with ONLY the single number corresponding to the correct option (e.g. "1
         }
 
         if (!starClicked) {
-            const allBtns = Array.from(doc.querySelectorAll('.h5p-controls button, .h5p-control-bar button, .h5p-seekbar *'));
+            const allBtns = Array.from(doc.querySelectorAll('.h5p-controls button, .h5p-control-bar button, .h5p-controls div, .h5p-seekbar *'));
             for (const b of allBtns) {
                 const html = (b.outerHTML || '').toLowerCase();
                 if (html.includes('star') || html.includes('endscreen') || html.includes('polygon') || html.includes('submit screen')) {
@@ -711,6 +717,24 @@ Respond with ONLY the single number corresponding to the correct option (e.g. "1
         // 3. Click "Submit Answers" button in the summary/endcard modal
         await wait(CFG.D_SHORT);
         let submitted = false;
+
+        // Try direct handleSubmit call on endscreen instance first
+        try {
+            if (win.H5P && win.H5P.instances) {
+                win.H5P.instances.forEach(inst => {
+                    const iv = inst.interactiveVideo || inst;
+                    if (iv.endscreen && typeof iv.endscreen.handleSubmit === 'function') {
+                        iv.endscreen.handleSubmit();
+                        L('✅ Invoked iv.endscreen.handleSubmit() directly!', 's');
+                        submitted = true;
+                    }
+                    if (typeof iv.setUserSubmitted === 'function') {
+                        iv.setUserSubmitted(true);
+                    }
+                });
+            }
+        } catch (e) {}
+
         for (let attempt = 0; attempt < 4; attempt++) {
             const endcardText = (doc.querySelector('.h5p-endcard, .h5p-summary, .h5p-interactive-video')?.textContent || doc.body.textContent || '').toLowerCase();
             if (endcardText.includes('your answers have been submitted')) {
@@ -719,7 +743,7 @@ Respond with ONLY the single number corresponding to the correct option (e.g. "1
                 break;
             }
 
-            const submitBtns = Array.from(doc.querySelectorAll('button, .h5p-joubelui-button, a, .h5p-endcard-submit-button, [role="button"], input[type="submit"]'));
+            const submitBtns = Array.from(doc.querySelectorAll('button, .h5p-joubelui-button, a, .h5p-endcard-submit-button, [role="button"], input[type="submit"], [class*="submit-button"]'));
             for (const b of submitBtns) {
                 const t = (b.textContent || b.innerText || b.value || '').trim().toLowerCase();
                 const cls = (b.className || '').toLowerCase();
@@ -727,7 +751,8 @@ Respond with ONLY the single number corresponding to the correct option (e.g. "1
                     t.includes('submit answer') ||
                     (t.includes('submit') && !t.includes('grade') && !t.includes('feedback') && !t.includes('finish')) ||
                     cls.includes('endcard-submit-button') ||
-                    cls.includes('submit-answers')
+                    cls.includes('submit-answers') ||
+                    cls.includes('submit-button')
                 ) {
                     if (b.offsetParent !== null || b.getClientRects().length > 0) {
                         L('✅ Successfully Clicked [Submit Answers] button!', 's');
